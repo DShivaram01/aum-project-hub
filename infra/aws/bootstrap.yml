@@ -4,10 +4,20 @@ Description: >
   that GitHub Actions can assume (through OIDC, no stored AWS keys) to push images and deploy to ECS.
 
 Parameters:
-  GitHubRepo:
+  GitHubOwner:
     Type: String
-    Default: DShivaram01/aum-project-hub
-    Description: owner/repo allowed to assume the deploy role
+    Default: DShivaram01
+  GitHubOwnerId:
+    Type: String
+    Default: "117584247"
+    Description: Numeric GitHub account id (GitHub puts it in the OIDC subject)
+  GitHubRepoName:
+    Type: String
+    Default: aum-project-hub
+  GitHubRepoId:
+    Type: String
+    Default: "1441476320"
+    Description: Numeric repository id; changes if the repo is deleted and recreated
   DeployBranch:
     Type: String
     Default: main
@@ -67,7 +77,10 @@ Resources:
             Condition:
               StringEquals:
                 token.actions.githubusercontent.com:aud: sts.amazonaws.com
-                token.actions.githubusercontent.com:sub: !Sub repo:${GitHubRepo}:ref:refs/heads/${DeployBranch}
+                # GitHub sends the newer format with numeric ids; the older name-only format is kept as well
+                token.actions.githubusercontent.com:sub:
+                  - !Sub repo:${GitHubOwner}@${GitHubOwnerId}/${GitHubRepoName}@${GitHubRepoId}:ref:refs/heads/${DeployBranch}
+                  - !Sub repo:${GitHubOwner}/${GitHubRepoName}:ref:refs/heads/${DeployBranch}
       Policies:
         - PolicyName: push-image-and-deploy
           PolicyDocument:
