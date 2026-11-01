@@ -7,6 +7,7 @@ import jakarta.servlet.http.HttpServletResponse;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.slf4j.MDC;
+import org.slf4j.event.Level;
 import org.springframework.core.Ordered;
 import org.springframework.core.annotation.Order;
 import org.springframework.stereotype.Component;
@@ -17,7 +18,7 @@ import java.util.UUID;
 
 // Logs one line per API request with its status and how long it took.
 // Runs before Spring Security so 401/403 responses are logged too.
-// The fields are also put in the MDC, so they show up as JSON fields in CloudWatch.
+// With the "aws" profile the key-value pairs become JSON fields that CloudWatch can query.
 @Component
 @Order(Ordered.HIGHEST_PRECEDENCE)
 public class RequestLoggingFilter extends OncePerRequestFilter {
@@ -51,22 +52,15 @@ public class RequestLoggingFilter extends OncePerRequestFilter {
             long durationMs = (System.nanoTime() - start) / 1_000_000;
             int status = response.getStatus();
 
-            MDC.put("httpMethod", request.getMethod());
-            MDC.put("path", request.getRequestURI());
-            MDC.put("status", String.valueOf(status));
-            MDC.put("durationMs", String.valueOf(durationMs));
+            Level level = status >= 500 ? Level.ERROR : status >= 400 ? Level.WARN : Level.INFO;
+            log.atLevel(level)
+                    .addKeyValue("httpMethod", request.getMethod())
+                    .addKeyValue("path", request.getRequestURI())
+                    .addKeyValue("status", status)
+                    .addKeyValue("durationMs", durationMs)
+                    .log("{} {} -> {} ({} ms)", request.getMethod(), request.getRequestURI(), status, durationMs);
 
-            String line = "%s %s -> %d (%d ms)".formatted(request.getMethod(), request.getRequestURI(),
-                    status, durationMs);
-            if (status >= 500) {
-                log.error(line);
-            } else if (status >= 400) {
-                log.warn(line);
-            } else {
-                log.info(line);
-            }
-
-            MDC.clear();
+            MDC.remove("requestId");
         }
     }
 }

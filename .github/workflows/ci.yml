@@ -5,7 +5,18 @@ on:
     branches: ["**"]
   pull_request:
 
+permissions:
+  contents: read
+
 jobs:
+  lint-infra:
+    name: Lint CloudFormation
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: pip install cfn-lint
+      - run: cfn-lint infra/aws/*.yml
+
   test:
     name: Build and test
     runs-on: ubuntu-latest
@@ -62,3 +73,53 @@ jobs:
       - name: Stop containers
         if: always()
         run: docker compose down -v
+
+  # Runs only on main, and only after the AWS stacks exist and the
+  # AWS_DEPLOY_ROLE_ARN and AWS_REGION repository variables are set (see docs/DEPLOYMENT.md)
+  deploy:
+    name: Deploy to AWS
+    needs: [docker, lint-infra]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && vars.AWS_DEPLOY_ROLE_ARN != ''
+    runs-on: ubuntu-latest
+    concurrency: deploy-aws
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - id: ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - id: build
+        name: Build and push image
+        env:
+          IMAGE: ${{ steps.ecr.outputs.registry }}/aum-project-hub:${{ github.sha }}
+        run: |
+          docker build -t "$IMAGE" .
+          docker push "$IMAGE"
+          echo "image=$IMAGE" >> "$GITHUB_OUTPUT"
+
+      - name: Download current task definition
+        run: |
+          aws ecs describe-task-definition --task-definition aum-project-hub \
+            --query taskDefinition > task-definition.json
+
+      - id: render
+        uses: aws-actions/amazon-ecs-render-task-definition@v1
+        with:
+          task-definition: task-definition.json
+          container-name: app
+          image: ${{ steps.build.outputs.image }}
+
+      - uses: aws-actions/amazon-ecs-deploy-task-definition@v2
+        with:
+          task-definition: ${{ steps.render.outputs.task-definition }}
+          cluster: aum-project-hub
+          service: aum-project-hub
+          wait-for-service-stability: true

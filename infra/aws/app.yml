@@ -1,0 +1,438 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  AUM Project Hub - ECS Fargate service behind an Application Load Balancer,
+  RDS PostgreSQL, secrets in Secrets Manager, and CloudWatch logs, alarms and a dashboard.
+
+Parameters:
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+    Description: The default VPC works fine
+  SubnetIds:
+    Type: List<AWS::EC2::Subnet::Id>
+    Description: At least two public subnets in different availability zones
+  ImageUri:
+    Type: String
+    Description: Full ECR image URI, e.g. 123456789012.dkr.ecr.us-east-1.amazonaws.com/aum-project-hub:abc123
+  DesiredCount:
+    Type: Number
+    Default: 1
+  DBInstanceClass:
+    Type: String
+    Default: db.t4g.micro
+  CertificateArn:
+    Type: String
+    Default: ""
+    Description: Optional ACM certificate for HTTPS. Leave empty to serve plain HTTP.
+  AlarmEmail:
+    Type: String
+    Default: ""
+    Description: Optional email address that receives alarm notifications
+
+Conditions:
+  UseHttps: !Not [!Equals [!Ref CertificateArn, ""]]
+  SendAlarmEmail: !Not [!Equals [!Ref AlarmEmail, ""]]
+
+Resources:
+  # ---------- Networking ----------
+
+  LoadBalancerSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Public HTTP/HTTPS to the load balancer
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: 0.0.0.0/0
+
+  AppSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: App containers, only reachable from the load balancer
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 8080
+          ToPort: 8080
+          SourceSecurityGroupId: !Ref LoadBalancerSecurityGroup
+
+  DatabaseSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: PostgreSQL, only reachable from the app containers
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 5432
+          ToPort: 5432
+          SourceSecurityGroupId: !Ref AppSecurityGroup
+
+  # ---------- Database ----------
+
+  DatabaseSubnetGroup:
+    Type: AWS::RDS::DBSubnetGroup
+    Properties:
+      DBSubnetGroupDescription: Subnets for the project hub database
+      SubnetIds: !Ref SubnetIds
+
+  Database:
+    Type: AWS::RDS::DBInstance
+    DeletionPolicy: Snapshot
+    UpdateReplacePolicy: Snapshot
+    Properties:
+      Engine: postgres
+      DBInstanceClass: !Ref DBInstanceClass
+      DBName: projecthub
+      MasterUsername: projecthub
+      # RDS generates the password and stores it in Secrets Manager
+      ManageMasterUserPassword: true
+      AllocatedStorage: "20"
+      StorageType: gp3
+      StorageEncrypted: true
+      PubliclyAccessible: false
+      BackupRetentionPeriod: 7
+      DBSubnetGroupName: !Ref DatabaseSubnetGroup
+      VPCSecurityGroups:
+        - !Ref DatabaseSecurityGroup
+
+  JwtSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: aum-project-hub/jwt-secret
+      GenerateSecretString:
+        PasswordLength: 64
+        ExcludePunctuation: true
+
+  # ---------- Load balancer ----------
+
+  LoadBalancer:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Scheme: internet-facing
+      Type: application
+      Subnets: !Ref SubnetIds
+      SecurityGroups:
+        - !Ref LoadBalancerSecurityGroup
+
+  TargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      VpcId: !Ref VpcId
+      Protocol: HTTP
+      Port: 8080
+      TargetType: ip
+      HealthCheckPath: /actuator/health
+      HealthCheckIntervalSeconds: 15
+      HealthyThresholdCount: 2
+      UnhealthyThresholdCount: 3
+      TargetGroupAttributes:
+        - Key: deregistration_delay.timeout_seconds
+          Value: "30"
+
+  HttpListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      LoadBalancerArn: !Ref LoadBalancer
+      Port: 80
+      Protocol: HTTP
+      DefaultActions: !If
+        - UseHttps
+        - - Type: redirect
+            RedirectConfig:
+              Protocol: HTTPS
+              Port: "443"
+              StatusCode: HTTP_301
+        - - Type: forward
+            TargetGroupArn: !Ref TargetGroup
+
+  HttpsListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Condition: UseHttps
+    Properties:
+      LoadBalancerArn: !Ref LoadBalancer
+      Port: 443
+      Protocol: HTTPS
+      Certificates:
+        - CertificateArn: !Ref CertificateArn
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref TargetGroup
+
+  # ---------- ECS ----------
+
+  Cluster:
+    Type: AWS::ECS::Cluster
+    Properties:
+      ClusterName: aum-project-hub
+
+  LogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: /ecs/aum-project-hub
+      RetentionInDays: 14
+
+  TaskExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: aum-project-hub-task-execution
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - !Sub arn:${AWS::Partition}:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
+      Policies:
+        - PolicyName: read-app-secrets
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: secretsmanager:GetSecretValue
+                Resource:
+                  - !Ref JwtSecret
+                  - !GetAtt Database.MasterUserSecret.SecretArn
+
+  TaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: aum-project-hub
+      RequiresCompatibilities:
+        - FARGATE
+      NetworkMode: awsvpc
+      Cpu: "512"
+      Memory: "1024"
+      ExecutionRoleArn: !GetAtt TaskExecutionRole.Arn
+      RuntimePlatform:
+        OperatingSystemFamily: LINUX
+        CpuArchitecture: X86_64
+      ContainerDefinitions:
+        - Name: app
+          Image: !Ref ImageUri
+          Essential: true
+          PortMappings:
+            - ContainerPort: 8080
+          Environment:
+            - Name: SPRING_PROFILES_ACTIVE
+              Value: aws
+            - Name: DB_URL
+              Value: !Sub jdbc:postgresql://${Database.Endpoint.Address}:${Database.Endpoint.Port}/projecthub
+          Secrets:
+            - Name: DB_USERNAME
+              ValueFrom: !Sub "${Database.MasterUserSecret.SecretArn}:username::"
+            - Name: DB_PASSWORD
+              ValueFrom: !Sub "${Database.MasterUserSecret.SecretArn}:password::"
+            - Name: JWT_SECRET
+              ValueFrom: !Ref JwtSecret
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref LogGroup
+              awslogs-region: !Ref AWS::Region
+              awslogs-stream-prefix: app
+
+  Service:
+    Type: AWS::ECS::Service
+    DependsOn: HttpListener
+    Properties:
+      ServiceName: aum-project-hub
+      Cluster: !Ref Cluster
+      LaunchType: FARGATE
+      TaskDefinition: !Ref TaskDefinition
+      DesiredCount: !Ref DesiredCount
+      HealthCheckGracePeriodSeconds: 120
+      DeploymentConfiguration:
+        MinimumHealthyPercent: 100
+        MaximumPercent: 200
+        DeploymentCircuitBreaker:
+          Enable: true
+          Rollback: true
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          # Public IP lets the task pull from ECR without a NAT gateway.
+          # The security group still only accepts traffic from the load balancer.
+          AssignPublicIp: ENABLED
+          Subnets: !Ref SubnetIds
+          SecurityGroups:
+            - !Ref AppSecurityGroup
+      LoadBalancers:
+        - ContainerName: app
+          ContainerPort: 8080
+          TargetGroupArn: !Ref TargetGroup
+
+  # ---------- Monitoring ----------
+
+  AlarmTopic:
+    Type: AWS::SNS::Topic
+
+  AlarmEmailSubscription:
+    Type: AWS::SNS::Subscription
+    Condition: SendAlarmEmail
+    Properties:
+      TopicArn: !Ref AlarmTopic
+      Protocol: email
+      Endpoint: !Ref AlarmEmail
+
+  # Counts ERROR log lines (unexpected exceptions and 5xx responses) from the JSON logs
+  AppErrorMetricFilter:
+    Type: AWS::Logs::MetricFilter
+    Properties:
+      LogGroupName: !Ref LogGroup
+      FilterPattern: '{ $.log.level = "ERROR" }'
+      MetricTransformations:
+        - MetricNamespace: AumProjectHub
+          MetricName: AppErrors
+          MetricValue: "1"
+          DefaultValue: 0
+
+  AppErrorAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: The app logged errors in the last 5 minutes
+      Namespace: AumProjectHub
+      MetricName: AppErrors
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 5
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !Ref AlarmTopic
+
+  Target5xxAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: The app returned 5xx responses
+      Namespace: AWS/ApplicationELB
+      MetricName: HTTPCode_Target_5XX_Count
+      Dimensions:
+        - Name: LoadBalancer
+          Value: !GetAtt LoadBalancer.LoadBalancerFullName
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 5
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !Ref AlarmTopic
+
+  LatencyAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: p95 response time above 1 second for 15 minutes
+      Namespace: AWS/ApplicationELB
+      MetricName: TargetResponseTime
+      Dimensions:
+        - Name: LoadBalancer
+          Value: !GetAtt LoadBalancer.LoadBalancerFullName
+      ExtendedStatistic: p95
+      Period: 300
+      EvaluationPeriods: 3
+      Threshold: 1
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !Ref AlarmTopic
+
+  UnhealthyHostAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: A task is failing its health check
+      Namespace: AWS/ApplicationELB
+      MetricName: UnHealthyHostCount
+      Dimensions:
+        - Name: LoadBalancer
+          Value: !GetAtt LoadBalancer.LoadBalancerFullName
+        - Name: TargetGroup
+          Value: !GetAtt TargetGroup.TargetGroupFullName
+      Statistic: Maximum
+      Period: 60
+      EvaluationPeriods: 3
+      Threshold: 0
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !Ref AlarmTopic
+
+  DatabaseCpuAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: Database CPU above 80 percent
+      Namespace: AWS/RDS
+      MetricName: CPUUtilization
+      Dimensions:
+        - Name: DBInstanceIdentifier
+          Value: !Ref Database
+      Statistic: Average
+      Period: 300
+      EvaluationPeriods: 2
+      Threshold: 80
+      ComparisonOperator: GreaterThanThreshold
+      AlarmActions:
+        - !Ref AlarmTopic
+
+  Dashboard:
+    Type: AWS::CloudWatch::Dashboard
+    Properties:
+      DashboardName: aum-project-hub
+      DashboardBody: !Sub
+        - |
+          {
+            "widgets": [
+              {"type": "metric", "x": 0, "y": 0, "width": 12, "height": 6, "properties": {
+                "title": "Requests and errors", "region": "${AWS::Region}", "stat": "Sum", "period": 60,
+                "metrics": [
+                  ["AWS/ApplicationELB", "RequestCount", "LoadBalancer", "${LbName}"],
+                  [".", "HTTPCode_Target_4XX_Count", ".", "."],
+                  [".", "HTTPCode_Target_5XX_Count", ".", "."]
+                ]}},
+              {"type": "metric", "x": 12, "y": 0, "width": 12, "height": 6, "properties": {
+                "title": "Response time (seconds)", "region": "${AWS::Region}", "period": 60,
+                "metrics": [
+                  ["AWS/ApplicationELB", "TargetResponseTime", "LoadBalancer", "${LbName}", {"stat": "p50"}],
+                  ["...", {"stat": "p95"}],
+                  ["...", {"stat": "p99"}]
+                ]}},
+              {"type": "metric", "x": 0, "y": 6, "width": 12, "height": 6, "properties": {
+                "title": "ECS CPU and memory (%)", "region": "${AWS::Region}", "stat": "Average", "period": 60,
+                "metrics": [
+                  ["AWS/ECS", "CPUUtilization", "ClusterName", "aum-project-hub", "ServiceName", "aum-project-hub"],
+                  [".", "MemoryUtilization", ".", ".", ".", "."]
+                ]}},
+              {"type": "metric", "x": 12, "y": 6, "width": 12, "height": 6, "properties": {
+                "title": "Database", "region": "${AWS::Region}", "stat": "Average", "period": 60,
+                "metrics": [
+                  ["AWS/RDS", "CPUUtilization", "DBInstanceIdentifier", "${DbId}"],
+                  [".", "DatabaseConnections", ".", "."]
+                ]}},
+              {"type": "metric", "x": 0, "y": 12, "width": 12, "height": 6, "properties": {
+                "title": "Application errors (from logs)", "region": "${AWS::Region}", "stat": "Sum", "period": 60,
+                "metrics": [["AumProjectHub", "AppErrors"]]}},
+              {"type": "log", "x": 12, "y": 12, "width": 12, "height": 6, "properties": {
+                "title": "Slowest API requests", "region": "${AWS::Region}",
+                "query": "SOURCE '/ecs/aum-project-hub' | filter ispresent(durationMs) | sort durationMs desc | fields @timestamp, httpMethod, path, status, durationMs | limit 20"
+                }}
+            ]
+          }
+        - LbName: !GetAtt LoadBalancer.LoadBalancerFullName
+          DbId: !Ref Database
+
+Outputs:
+  AppUrl:
+    Value: !If
+      - UseHttps
+      - !Sub https://${LoadBalancer.DNSName}
+      - !Sub http://${LoadBalancer.DNSName}
+  DashboardUrl:
+    Value: !Sub https://${AWS::Region}.console.aws.amazon.com/cloudwatch/home?region=${AWS::Region}#dashboards:name=aum-project-hub
+  LogGroup:
+    Value: !Ref LogGroup

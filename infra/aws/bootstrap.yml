@@ -1,0 +1,110 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  AUM Project Hub - one-time setup. ECR repository for the Docker image and an IAM role
+  that GitHub Actions can assume (through OIDC, no stored AWS keys) to push images and deploy to ECS.
+
+Parameters:
+  GitHubRepo:
+    Type: String
+    Default: DShivaram01/aum-project-hub
+    Description: owner/repo allowed to assume the deploy role
+  DeployBranch:
+    Type: String
+    Default: main
+  CreateGitHubOidcProvider:
+    Type: String
+    AllowedValues: ["true", "false"]
+    Default: "true"
+    Description: Set to false if this AWS account already has the token.actions.githubusercontent.com provider
+  ExistingGitHubOidcProviderArn:
+    Type: String
+    Default: ""
+    Description: Only needed when CreateGitHubOidcProvider is false
+
+Conditions:
+  CreateProvider: !Equals [!Ref CreateGitHubOidcProvider, "true"]
+
+Resources:
+  Repository:
+    Type: AWS::ECR::Repository
+    Properties:
+      RepositoryName: aum-project-hub
+      EmptyOnDelete: true
+      ImageScanningConfiguration:
+        ScanOnPush: true
+      LifecyclePolicy:
+        LifecyclePolicyText: |
+          {
+            "rules": [{
+              "rulePriority": 1,
+              "description": "Keep the last 10 images",
+              "selection": {"tagStatus": "any", "countType": "imageCountMoreThan", "countNumber": 10},
+              "action": {"type": "expire"}
+            }]
+          }
+
+  GitHubOidcProvider:
+    Type: AWS::IAM::OIDCProvider
+    Condition: CreateProvider
+    Properties:
+      Url: https://token.actions.githubusercontent.com
+      ClientIdList:
+        - sts.amazonaws.com
+      ThumbprintList:
+        - 6938fd4d98bab03faadb97b34396831e3780aea1
+
+  DeployRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: aum-project-hub-github-deploy
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Federated: !If [CreateProvider, !Ref GitHubOidcProvider, !Ref ExistingGitHubOidcProviderArn]
+            Action: sts:AssumeRoleWithWebIdentity
+            Condition:
+              StringEquals:
+                token.actions.githubusercontent.com:aud: sts.amazonaws.com
+                token.actions.githubusercontent.com:sub: !Sub repo:${GitHubRepo}:ref:refs/heads/${DeployBranch}
+      Policies:
+        - PolicyName: push-image-and-deploy
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: ecr:GetAuthorizationToken
+                Resource: "*"
+              - Effect: Allow
+                Action:
+                  - ecr:BatchCheckLayerAvailability
+                  - ecr:BatchGetImage
+                  - ecr:CompleteLayerUpload
+                  - ecr:InitiateLayerUpload
+                  - ecr:PutImage
+                  - ecr:UploadLayerPart
+                Resource: !GetAtt Repository.Arn
+              - Effect: Allow
+                Action:
+                  - ecs:DescribeTaskDefinition
+                  - ecs:RegisterTaskDefinition
+                Resource: "*"
+              - Effect: Allow
+                Action:
+                  - ecs:DescribeServices
+                  - ecs:UpdateService
+                Resource: !Sub arn:${AWS::Partition}:ecs:${AWS::Region}:${AWS::AccountId}:service/aum-project-hub/aum-project-hub
+              - Effect: Allow
+                Action: iam:PassRole
+                Resource: !Sub arn:${AWS::Partition}:iam::${AWS::AccountId}:role/aum-project-hub-*
+                Condition:
+                  StringEquals:
+                    iam:PassedToService: ecs-tasks.amazonaws.com
+
+Outputs:
+  RepositoryUri:
+    Value: !GetAtt Repository.RepositoryUri
+  DeployRoleArn:
+    Description: Save this as the AWS_DEPLOY_ROLE_ARN variable in the GitHub repository settings
+    Value: !GetAtt DeployRole.Arn
