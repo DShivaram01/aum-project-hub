@@ -77,7 +77,6 @@ Resources:
             Condition:
               StringEquals:
                 token.actions.githubusercontent.com:aud: sts.amazonaws.com
-                # GitHub sends the newer format with numeric ids; the older name-only format is kept as well
                 token.actions.githubusercontent.com:sub:
                   - !Sub repo:${GitHubOwner}@${GitHubOwnerId}/${GitHubRepoName}@${GitHubRepoId}:ref:refs/heads/${DeployBranch}
                   - !Sub repo:${GitHubOwner}/${GitHubRepoName}:ref:refs/heads/${DeployBranch}

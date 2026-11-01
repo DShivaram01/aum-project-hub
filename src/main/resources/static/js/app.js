@@ -1,5 +1,3 @@
-// Single-page frontend. Routes are in the URL hash, e.g. #/projects/3
-// All text is added with textContent (through h()), never innerHTML, so user input cannot inject HTML.
 
 const app = document.getElementById("app");
 const nav = document.getElementById("nav");
@@ -30,7 +28,7 @@ function h(tag, attrs, ...children) {
 }
 
 function render(...nodes) {
-    app.replaceChildren(...nodes);
+    app.replaceChildren(...nodes.filter(Boolean));
 }
 
 function toast(message) {
@@ -90,7 +88,40 @@ function renderNav() {
     nav.replaceChildren(...links);
 }
 
-// ----- Browse -----
+let demoInfo;
+
+async function demoBox() {
+    if (demoInfo === undefined) {
+        try {
+            demoInfo = await Api.get("/api/demo");
+        } catch (error) {
+            demoInfo = null;
+        }
+    }
+    if (!demoInfo || Api.getToken()) {
+        return null;
+    }
+
+    const buttons = demoInfo.accounts.map((account) => h("button", {
+        className: "secondary",
+        onClick: async () => {
+            try {
+                Api.saveLogin(await Api.post("/api/auth/login",
+                    {email: account.email, password: demoInfo.password}));
+                toast("Logged in as " + account.label);
+                location.hash = "#/me";
+            } catch (error) {
+                toast(error.message);
+            }
+        }
+    }, "Log in as " + account.label));
+
+    return h("div", {className: "card demo"},
+        h("strong", {}, "Just looking around? "),
+        "Use a demo account. Faculty can review join requests, students can send them.",
+        h("div", {className: "actions"}, buttons),
+        h("div", {className: "meta"}, "Demo password: " + demoInfo.password));
+}
 
 async function browsePage() {
     const params = new URLSearchParams(location.hash.split("?")[1] || "");
@@ -117,7 +148,7 @@ async function browsePage() {
             h("option", {value: "CLOSED", selected: params.get("status") === "CLOSED"}, "Closed")),
         h("button", {type: "submit"}, "Filter"));
 
-    render(h("h1", {}, "Projects"), form, list);
+    render(h("h1", {}, "Projects"), await demoBox(), form, list);
 
     try {
         const projects = await Api.get("/api/projects?" + params.toString());
@@ -138,8 +169,6 @@ function projectCard(project) {
             [project.category, "by " + project.ownerName, formatDate(project.createdAt)].filter(Boolean).join(" · ")),
         project.requiredSkills ? h("p", {}, "Skills: " + project.requiredSkills) : null);
 }
-
-// ----- Project details -----
 
 async function projectPage(id) {
     render(h("p", {className: "empty"}, "Loading..."));
@@ -252,8 +281,6 @@ async function deleteProject(id) {
     }
 }
 
-// ----- Create / edit project -----
-
 async function projectFormPage(id) {
     if (!requireLogin()) {
         return;
@@ -301,9 +328,7 @@ async function projectFormPage(id) {
     render(h("h1", {}, id ? "Edit project" : "New project"), form);
 }
 
-// ----- Login / register -----
-
-function loginPage() {
+async function loginPage() {
     const status = h("div");
     const form = h("form", {
             className: "stack",
@@ -324,7 +349,8 @@ function loginPage() {
         status);
 
     render(h("h1", {}, "Log in"), form,
-        h("p", {}, "No account? ", h("a", {href: "#/register"}, "Register")));
+        h("p", {}, "No account? ", h("a", {href: "#/register"}, "Register")),
+        await demoBox());
 }
 
 function registerPage() {
@@ -358,8 +384,6 @@ function registerPage() {
 
     render(h("h1", {}, "Register"), form);
 }
-
-// ----- My account: profile, my projects, my requests -----
 
 async function accountPage() {
     if (!requireLogin()) {
@@ -448,8 +472,6 @@ function myRequestRow(request) {
     }
     return row;
 }
-
-// ----- Router -----
 
 function route() {
     renderNav();

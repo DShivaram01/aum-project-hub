@@ -178,3 +178,8 @@ button.danger {
 .hidden {
     display: none;
 }
+
+.card.demo {
+    border-color: #0b5394;
+    background: #eef4fb;
+}

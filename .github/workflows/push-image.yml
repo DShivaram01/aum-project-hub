@@ -1,7 +1,5 @@
 name: Push image to ECR
 
-# Run by hand from the Actions tab. Builds the Docker image and pushes it to ECR
-# without deploying it. Used for the very first image, before the ECS service exists.
 on:
   workflow_dispatch:
 

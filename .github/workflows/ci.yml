@@ -52,7 +52,7 @@ jobs:
       - name: Wait for health check
         run: |
           for i in $(seq 1 40); do
-            if curl -fs http://localhost:8080/api/health; then
+            if curl -fs http://localhost:8080/actuator/health; then
               exit 0
             fi
             sleep 3
@@ -74,8 +74,6 @@ jobs:
         if: always()
         run: docker compose down -v
 
-  # Runs only on main, and only after the AWS stacks exist and the
-  # AWS_DEPLOY_ROLE_ARN and AWS_REGION repository variables are set (see docs/DEPLOYMENT.md)
   deploy:
     name: Deploy to AWS
     needs: [docker, lint-infra]

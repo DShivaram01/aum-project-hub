@@ -1,4 +1,3 @@
-// Small wrapper around fetch that adds the JWT token and turns error responses into exceptions
 const Api = (() => {
     const TOKEN_KEY = "projecthub.token";
     const USER_KEY = "projecthub.user";
@@ -26,7 +25,6 @@ const Api = (() => {
         localStorage.removeItem(USER_KEY);
     }
 
-    // The API returns either {"error": "..."} or {"field": "message", ...} for validation errors
     function errorMessage(body, status) {
         if (!body) {
             return "Request failed (" + status + ")";
