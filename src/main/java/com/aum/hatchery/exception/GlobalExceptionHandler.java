@@ -1,5 +1,6 @@
 package com.aum.hatchery.exception;
 
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.validation.FieldError;
@@ -14,14 +15,27 @@ import java.util.Map;
 @RestControllerAdvice
 public class GlobalExceptionHandler {
 
-    @ExceptionHandler({UserNotFoundException.class, ProjectNotFoundException.class})
+    @ExceptionHandler({UserNotFoundException.class, ProjectNotFoundException.class,
+            JoinRequestNotFoundException.class})
     public ResponseEntity<Map<String, String>> handleNotFound(RuntimeException e) {
         return error(HttpStatus.NOT_FOUND, e.getMessage());
     }
 
-    @ExceptionHandler(EmailAlreadyUsedException.class)
-    public ResponseEntity<Map<String, String>> handleEmailUsed(EmailAlreadyUsedException e) {
+    @ExceptionHandler({EmailAlreadyUsedException.class, JoinRequestConflictException.class})
+    public ResponseEntity<Map<String, String>> handleConflict(RuntimeException e) {
         return error(HttpStatus.CONFLICT, e.getMessage());
+    }
+
+    @ExceptionHandler(InvalidJoinRequestException.class)
+    public ResponseEntity<Map<String, String>> handleInvalidJoinRequest(InvalidJoinRequestException e) {
+        return error(HttpStatus.BAD_REQUEST, e.getMessage());
+    }
+
+    // Two requests at the same time can both pass the service check;
+    // the unique constraint catches the second one
+    @ExceptionHandler(DataIntegrityViolationException.class)
+    public ResponseEntity<Map<String, String>> handleDataIntegrity(DataIntegrityViolationException e) {
+        return error(HttpStatus.CONFLICT, "This change conflicts with existing data");
     }
 
     @ExceptionHandler(InvalidCredentialsException.class)

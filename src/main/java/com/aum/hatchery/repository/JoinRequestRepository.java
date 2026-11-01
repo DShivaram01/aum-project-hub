@@ -11,6 +11,10 @@ public interface JoinRequestRepository extends JpaRepository<JoinRequest, Long> 
 
     List<JoinRequest> findByUserId(Long userId);
 
+    List<JoinRequest> findByProjectIdOrderByCreatedAtDesc(Long projectId);
+
+    List<JoinRequest> findByUserIdOrderByCreatedAtDesc(Long userId);
+
     // Used to stop a user from sending a second request to the same project
     boolean existsByProjectIdAndUserId(Long projectId, Long userId);
 
