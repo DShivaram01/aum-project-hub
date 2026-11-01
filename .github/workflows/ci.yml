@@ -1,0 +1,64 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+jobs:
+  test:
+    name: Build and test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+          cache: maven
+
+      - name: Run tests
+        run: ./mvnw -B verify
+
+      - name: Upload test reports
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: surefire-reports
+          path: target/surefire-reports
+
+  docker:
+    name: Docker image smoke test
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Start app and database
+        run: docker compose up -d --build
+
+      - name: Wait for health check
+        run: |
+          for i in $(seq 1 40); do
+            if curl -fs http://localhost:8080/api/health; then
+              exit 0
+            fi
+            sleep 3
+          done
+          docker compose logs app
+          exit 1
+
+      - name: Register, log in and create a project
+        run: |
+          curl -fs -X POST localhost:8080/api/auth/register -H "Content-Type: application/json" \
+            -d '{"name":"CI","email":"ci@aum.edu","password":"password123","role":"STUDENT"}'
+          TOKEN=$(curl -fs -X POST localhost:8080/api/auth/login -H "Content-Type: application/json" \
+            -d '{"email":"ci@aum.edu","password":"password123"}' | jq -r .token)
+          curl -fs -X POST localhost:8080/api/projects -H "Authorization: Bearer $TOKEN" \
+            -H "Content-Type: application/json" -d '{"title":"CI project","description":"Smoke test"}'
+          curl -fs localhost:8080/api/projects | jq -e 'length == 1'
+
+      - name: Stop containers
+        if: always()
+        run: docker compose down -v
