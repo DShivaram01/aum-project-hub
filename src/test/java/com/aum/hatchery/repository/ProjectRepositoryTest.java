@@ -48,25 +48,39 @@ class ProjectRepositoryTest {
     }
 
     @Test
-    void findByCategoryIgnoresCase() {
-        List<Project> webProjects = projectRepository.findByCategoryIgnoreCase("web");
+    void searchWithNoFiltersReturnsEverything() {
+        assertEquals(3, projectRepository.search("", null, "").size());
+    }
+
+    @Test
+    void searchByCategoryIgnoresCase() {
+        List<Project> webProjects = projectRepository.search("web", null, "");
 
         assertEquals(2, webProjects.size());
     }
 
     @Test
-    void findByStatusReturnsOnlyOpenProjects() {
-        List<Project> openProjects = projectRepository.findByStatus(ProjectStatus.OPEN);
+    void searchByStatusReturnsOnlyOpenProjects() {
+        List<Project> openProjects = projectRepository.search("", ProjectStatus.OPEN, "");
 
         assertEquals(2, openProjects.size());
     }
 
     @Test
-    void findBySkillMatchesPartOfSkillList() {
-        List<Project> javaProjects = projectRepository.findByRequiredSkillsContainingIgnoreCase("java");
+    void searchBySkillMatchesPartOfSkillList() {
+        List<Project> javaProjects = projectRepository.search("", null, "java");
 
         assertEquals(1, javaProjects.size());
         assertEquals("Grade Tracker", javaProjects.get(0).getTitle());
+    }
+
+    @Test
+    void searchCombinesFilters() {
+        // Two Web projects exist, but only one of them is still open
+        List<Project> results = projectRepository.search("web", ProjectStatus.OPEN, "");
+
+        assertEquals(1, results.size());
+        assertEquals("Grade Tracker", results.get(0).getTitle());
     }
 
     @Test

@@ -13,4 +13,7 @@ public interface JoinRequestRepository extends JpaRepository<JoinRequest, Long> 
 
     // Used to stop a user from sending a second request to the same project
     boolean existsByProjectIdAndUserId(Long projectId, Long userId);
+
+    // Requests must be removed before their project can be deleted (foreign key)
+    void deleteByProjectId(Long projectId);
 }
