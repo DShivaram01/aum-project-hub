@@ -4,6 +4,7 @@ import com.aum.hatchery.dto.ProjectRequest;
 import com.aum.hatchery.dto.ProjectResponse;
 import com.aum.hatchery.exception.ProjectNotFoundException;
 import com.aum.hatchery.exception.UnauthorizedActionException;
+import com.aum.hatchery.exception.UserNotFoundException;
 import com.aum.hatchery.model.Project;
 import com.aum.hatchery.model.ProjectStatus;
 import com.aum.hatchery.model.User;
@@ -30,7 +31,8 @@ public class ProjectService {
     }
 
     public ProjectResponse createProject(ProjectRequest request, String currentUserEmail) {
-        User owner = userRepository.findByEmail(currentUserEmail).orElseThrow();
+        User owner = userRepository.findByEmail(currentUserEmail)
+                .orElseThrow(() -> new UserNotFoundException(currentUserEmail));
 
         Project project = new Project(request.title(), request.description(), request.category(),
                 request.requiredSkills(), owner);

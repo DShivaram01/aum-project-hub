@@ -24,7 +24,7 @@ public class UserService {
 
     // The email comes from the JWT token, so the user must exist
     public UserResponse getUserByEmail(String email) {
-        User user = userRepository.findByEmail(email).orElseThrow();
+        User user = userRepository.findByEmail(email).orElseThrow(() -> new UserNotFoundException(email));
         return UserResponse.from(user);
     }
 
