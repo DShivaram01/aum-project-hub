@@ -55,7 +55,13 @@ If the account already has a GitHub OIDC provider, add
 
 ### 2. Push the first image
 
-The ECS service needs an image to start, so push one by hand the first time:
+The ECS service needs an image to start, so push one before creating the app stack.
+
+Without Docker: add the `AWS_DEPLOY_ROLE_ARN` and `AWS_REGION` repository variables from step 4 now,
+then run **Actions -> Push image to ECR -> Run workflow** on `main`. The run summary shows the image URI
+to use as `ImageUri` below.
+
+With Docker installed locally:
 
 ```bash
 REPO=$ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/aum-project-hub
