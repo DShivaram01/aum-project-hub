@@ -68,7 +68,7 @@ jobs:
             -d '{"email":"ci@aum.edu","password":"password123"}' | jq -r .token)
           curl -fs -X POST localhost:8080/api/projects -H "Authorization: Bearer $TOKEN" \
             -H "Content-Type: application/json" -d '{"title":"CI project","description":"Smoke test"}'
-          curl -fs localhost:8080/api/projects | jq -e 'length == 1'
+          curl -fs localhost:8080/api/projects | jq -e 'any(.[]; .title == "CI project")'
 
       - name: Stop containers
         if: always()
