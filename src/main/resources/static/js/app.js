@@ -40,15 +40,77 @@ function toast(message) {
 }
 
 function badge(status) {
-    return h("span", {className: "badge " + status}, status);
+    return h("span", {className: "badge " + status},
+        h("span", {className: "dot", "aria-hidden": "true"}),
+        status.charAt(0) + status.slice(1).toLowerCase());
+}
+
+// calendar-style date: short month over the day number
+function dateBlock(value, lead) {
+    const date = new Date(value);
+    return h("div", {className: "date-block" + (lead ? " lead" : ""), "aria-hidden": "true"},
+        h("span", {className: "date-month"}, date.toLocaleDateString(undefined, {month: "short"})),
+        h("span", {className: "date-day"}, String(date.getDate())));
+}
+
+function countdown(value) {
+    const closed = new Date(value) <= Date.now();
+    return h("span", {className: "countdown" + (closed ? " closed" : "")}, timeLeft(value));
 }
 
 function formatDate(value) {
-    return value ? new Date(value).toLocaleDateString() : "";
+    return value
+        ? new Date(value).toLocaleDateString(undefined, {month: "short", day: "numeric", year: "numeric"})
+        : "";
+}
+
+function formatDateTime(value) {
+    return value ? new Date(value).toLocaleString([], {dateStyle: "medium", timeStyle: "short"}) : "";
+}
+
+function timeLeft(value) {
+    const ms = new Date(value) - Date.now();
+    if (ms <= 0) {
+        return "Entries closed";
+    }
+    const days = Math.floor(ms / 86400000);
+    if (days >= 1) {
+        return "Closes in " + days + (days === 1 ? " day" : " days");
+    }
+    const hours = Math.max(1, Math.floor(ms / 3600000));
+    return "Closes in " + hours + (hours === 1 ? " hour" : " hours");
+}
+
+// datetime-local inputs want "YYYY-MM-DDTHH:mm" in local time
+function toLocalInput(value) {
+    if (!value) {
+        return null;
+    }
+    const date = new Date(value);
+    date.setMinutes(date.getMinutes() - date.getTimezoneOffset());
+    return date.toISOString().slice(0, 16);
+}
+
+function intentText(submission) {
+    return [submission.present && "Presenting", submission.publish && "Publishing"].filter(Boolean).join(" + ");
 }
 
 function errorText(error) {
     return h("p", {className: "error"}, error.message);
+}
+
+function pageHeader(title, intro, action) {
+    return h("div", {className: action ? "page-header with-action" : "page-header"},
+        h("div", {}, h("h1", {}, title), intro ? h("p", {className: "page-intro"}, intro) : null),
+        action);
+}
+
+function skillTags(skills) {
+    const list = (skills || "").split(",").map((skill) => skill.trim()).filter(Boolean);
+    if (list.length === 0) {
+        return null;
+    }
+    return h("ul", {className: "skill-list"}, list.map((skill) => h("li", {className: "skill-tag"}, skill)));
 }
 
 function formData(form) {
@@ -69,11 +131,16 @@ function requireLogin() {
 
 function renderNav() {
     const user = Api.getUser();
-    const links = [h("a", {href: "#/"}, "Browse")];
+    const path = (location.hash.slice(1) || "/").split("?")[0];
+    const link = (href, text) => h("a", {
+        href: "#" + href,
+        className: path === href || (href !== "/" && path.startsWith(href + "/")) ? "active" : null
+    }, text);
+    const links = [link("/", "Browse"), link("/events", "Events")];
 
     if (user) {
-        links.push(h("a", {href: "#/new"}, "New project"));
-        links.push(h("a", {href: "#/me"}, "My account"));
+        links.push(link("/new", "New project"));
+        links.push(link("/me", "My account"));
         links.push(h("button", {
             onClick: () => {
                 Api.logout();
@@ -82,8 +149,8 @@ function renderNav() {
             }
         }, "Log out"));
     } else {
-        links.push(h("a", {href: "#/login"}, "Log in"));
-        links.push(h("a", {href: "#/register"}, "Register"));
+        links.push(link("/login", "Log in"));
+        links.push(link("/register", "Register"));
     }
     nav.replaceChildren(...links);
 }
@@ -102,8 +169,10 @@ async function demoBox() {
         return null;
     }
 
+    // Labels look like "Faculty - Dr. Maya Patel"; the button shows the role, the tooltip shows the name.
     const buttons = demoInfo.accounts.map((account) => h("button", {
         className: "secondary",
+        title: account.label,
         onClick: async () => {
             try {
                 Api.saveLogin(await Api.post("/api/auth/login",
@@ -114,21 +183,24 @@ async function demoBox() {
                 toast(error.message);
             }
         }
-    }, "Log in as " + account.label));
+    }, "Log in as " + account.label.split(" - ")[0]));
 
-    return h("div", {className: "card demo"},
-        h("strong", {}, "Just looking around? "),
-        "Use a demo account. Faculty can review join requests, students can send them.",
-        h("div", {className: "actions"}, buttons),
-        h("div", {className: "meta"}, "Demo password: " + demoInfo.password));
+    return h("section", {className: "demo-panel"},
+        h("div", {className: "demo-text"},
+            h("h2", {}, "Try a demo account"),
+            h("p", {}, "No sign-up needed. The faculty account reviews join requests, the student account sends them."),
+            h("p", {className: "demo-note"}, "Demo password: ", h("code", {}, demoInfo.password),
+                " · Demo environment uses HTTP. Use the provided demo accounts rather than personal credentials.")),
+        h("div", {className: "demo-actions"}, buttons));
 }
 
 async function browsePage() {
     const params = new URLSearchParams(location.hash.split("?")[1] || "");
-    const list = h("div", {}, h("p", {className: "empty"}, "Loading..."));
+    const list = h("div", {className: "project-list"}, h("p", {className: "empty"}, "Loading projects..."));
+    const results = h("div", {className: "results-bar"});
 
     const form = h("form", {
-            className: "filters",
+            className: "filter-bar",
             onSubmit: (event) => {
                 event.preventDefault();
                 const query = new URLSearchParams();
@@ -140,18 +212,34 @@ async function browsePage() {
                 location.hash = "#/?" + query.toString();
             }
         },
-        h("input", {name: "skill", placeholder: "Skill, e.g. java", value: params.get("skill") || ""}),
-        h("input", {name: "category", placeholder: "Category, e.g. Web", value: params.get("category") || ""}),
-        h("select", {name: "status"},
+        h("input", {name: "skill", "aria-label": "Skill", placeholder: "Skill (e.g. Java)", value: params.get("skill") || ""}),
+        h("input", {name: "category", "aria-label": "Category", placeholder: "Category (e.g. Data Science)",
+            value: params.get("category") || ""}),
+        h("select", {name: "status", "aria-label": "Status"},
             h("option", {value: ""}, "Any status"),
             h("option", {value: "OPEN", selected: params.get("status") === "OPEN"}, "Open"),
             h("option", {value: "CLOSED", selected: params.get("status") === "CLOSED"}, "Closed")),
+        h("select", {name: "sort", "aria-label": "Sort"},
+            h("option", {value: ""}, "Newest first"),
+            h("option", {value: "hot", selected: params.get("sort") === "hot"}, "Most upvoted")),
         h("button", {type: "submit"}, "Filter"));
 
-    render(h("h1", {}, "Projects"), await demoBox(), form, list);
+    render(
+        pageHeader("Projects at AUM",
+            "Research and side projects posted by AUM faculty and students. Ask to join, upvote the ones you like, or leave a tip."),
+        await demoBox(),
+        h("div", {className: "browse-layout"},
+            h("div", {},
+                h("section", {className: "filter-panel"}, h("h2", {className: "section-label"}, "Find projects"), form),
+                results,
+                list),
+            await deadlinesPanel()));
 
     try {
         const projects = await Api.get("/api/projects?" + params.toString());
+        results.replaceChildren(
+            h("span", {}, projects.length + (projects.length === 1 ? " project" : " projects")),
+            params.toString() ? h("a", {href: "#/"}, "Clear filters") : "");
         if (projects.length === 0) {
             list.replaceChildren(h("p", {className: "empty"}, "No projects match these filters."));
             return;
@@ -162,12 +250,44 @@ async function browsePage() {
     }
 }
 
+async function deadlinesPanel() {
+    let events;
+    try {
+        events = (await Api.get("/api/events")).filter((event) => event.acceptingSubmissions).slice(0, 3);
+    } catch (error) {
+        return null;
+    }
+    if (events.length === 0) {
+        return null;
+    }
+    return h("aside", {className: "deadlines"},
+        h("h2", {}, "Upcoming deadlines"),
+        h("ul", {className: "deadline-list"}, events.map((event, index) => h("li", {},
+            dateBlock(event.submissionDeadline, index === 0),
+            h("div", {className: "deadline-text"},
+                h("a", {href: "#/events/" + event.id}, event.title),
+                countdown(event.submissionDeadline))))),
+        h("a", {href: "#/events", className: "quiet-link"}, "All events"));
+}
+
+function hotBadge(project) {
+    return project.hot
+        ? h("span", {className: "badge HOT"}, h("span", {className: "dot", "aria-hidden": "true"}), "Hot")
+        : null;
+}
+
 function projectCard(project) {
-    return h("div", {className: "card"},
-        h("h3", {}, h("a", {href: "#/projects/" + project.id}, project.title), " ", badge(project.status)),
-        h("div", {className: "meta"},
-            [project.category, "by " + project.ownerName, formatDate(project.createdAt)].filter(Boolean).join(" · ")),
-        project.requiredSkills ? h("p", {}, "Skills: " + project.requiredSkills) : null);
+    const card = h("article", {className: "project-card"},
+        upvoteButton(project, (updated) => card.replaceWith(projectCard(updated))),
+        h("div", {className: "project-body"},
+            h("div", {className: "project-card-head"},
+                h("h3", {className: "project-title"}, h("a", {href: "#/projects/" + project.id}, project.title)),
+                h("div", {className: "card-badges"}, hotBadge(project), badge(project.status))),
+            h("p", {className: "project-meta"},
+                [project.category, project.ownerName, formatDate(project.createdAt)].filter(Boolean).join(" · ")),
+            project.description ? h("p", {className: "project-excerpt"}, project.description) : null,
+            skillTags(project.requiredSkills)));
+    return card;
 }
 
 async function projectPage(id) {
@@ -184,15 +304,21 @@ async function projectPage(id) {
     const user = Api.getUser();
     const isOwner = user && user.id === project.ownerId;
 
-    const details = h("div", {className: "card"},
-        h("h1", {}, project.title, " ", badge(project.status)),
-        h("div", {className: "meta"},
+    const details = h("section", {className: "card"},
+        h("div", {className: "detail-head"},
+            h("h1", {}, project.title),
+            h("div", {className: "card-badges"}, hotBadge(project), badge(project.status))),
+        h("p", {className: "project-meta"},
             [project.category, "Posted by " + project.ownerName, formatDate(project.createdAt)]
                 .filter(Boolean).join(" · ")),
-        h("p", {}, project.description),
-        project.requiredSkills ? h("p", {}, h("strong", {}, "Skills: "), project.requiredSkills) : null);
+        h("p", {className: "detail-description"}, project.description),
+        project.requiredSkills
+            ? h("div", {className: "detail-skills"},
+                h("h2", {className: "section-label"}, "Required skills"), skillTags(project.requiredSkills))
+            : null,
+        upvoteControl(project));
 
-    const sections = [details];
+    const sections = [h("a", {href: "#/", className: "back-link"}, "← All projects"), details];
 
     if (isOwner) {
         details.append(h("div", {className: "actions"},
@@ -202,10 +328,202 @@ async function projectPage(id) {
     } else if (user && project.status === "OPEN") {
         sections.push(joinSection(id));
     } else if (!user) {
-        sections.push(h("p", {}, h("a", {href: "#/login"}, "Log in"), " to request to join."));
+        sections.push(h("p", {className: "meta login-hint"},
+            h("a", {href: "#/login"}, "Log in"), " to request to join."));
     }
+    sections.push(await projectEventsSection(project, isOwner));
+    sections.push(await tipsSection(project, user, isOwner));
 
     render(...sections);
+}
+
+// Any logged-in user, student or faculty, can upvote; the server rejects upvotes on your own project.
+function upvoteButton(project, onUpdated, text) {
+    const user = Api.getUser();
+    const isOwner = user && user.id === project.ownerId;
+    const title = !user ? "Log in to upvote"
+        : isOwner ? "You can't upvote your own project"
+            : project.upvotedByMe ? "Remove your upvote" : "Upvote this project";
+
+    const button = h("button", {
+        type: "button",
+        className: "upvote" + (text ? " inline" : "") + (project.upvotedByMe ? " on" : ""),
+        "aria-pressed": project.upvotedByMe ? "true" : "false",
+        "aria-label": title,
+        title,
+        disabled: isOwner,
+        onClick: async (event) => {
+            event.preventDefault();
+            if (!user) {
+                location.hash = "#/login";
+                return;
+            }
+            button.disabled = true;
+            try {
+                const path = "/api/projects/" + project.id + "/upvote";
+                onUpdated(await (project.upvotedByMe ? Api.del(path) : Api.put(path)));
+            } catch (error) {
+                toast(error.message);
+                button.disabled = false;
+            }
+        }
+    }, h("span", {className: "upvote-arrow", "aria-hidden": "true"}, "▲"),
+        h("span", {className: "upvote-label"}, text || String(project.upvotes)));
+    return button;
+}
+
+function upvoteControl(project) {
+    const label = project.upvotes + (project.upvotes === 1 ? " upvote" : " upvotes");
+    return h("div", {className: "upvotes"},
+        upvoteButton(project, () => projectPage(project.id), project.upvotedByMe ? "Upvoted" : "Upvote"),
+        h("span", {}, label));
+}
+
+function intentChecks() {
+    return h("div", {className: "checks"},
+        h("label", {className: "check"}, h("input", {type: "checkbox", name: "present", checked: true}),
+            "Present it at the event"),
+        h("label", {className: "check"}, h("input", {type: "checkbox", name: "publish"}),
+            "Publish it (write-up, proceedings, journal)"));
+}
+
+function eventSelect(events, optional) {
+    return h("label", {}, "Event",
+        h("select", {name: "eventId", required: !optional},
+            optional ? h("option", {value: ""}, "None for now") : null,
+            events.map((event) => h("option", {value: event.id},
+                event.title + " (due " + formatDate(event.submissionDeadline) + ")"))));
+}
+
+function readIntent(form) {
+    const values = new FormData(form);
+    return {
+        eventId: values.get("eventId") ? Number(values.get("eventId")) : null,
+        present: values.get("present") !== null,
+        publish: values.get("publish") !== null
+    };
+}
+
+async function projectEventsSection(project, isOwner) {
+    const section = h("section", {className: "card"}, h("h2", {}, "Events"));
+
+    try {
+        const submissions = await Api.get("/api/projects/" + project.id + "/submissions");
+        if (submissions.length === 0) {
+            section.append(h("p", {className: "empty"}, "Not entered in any events yet."));
+        }
+        for (const submission of submissions) {
+            const canWithdraw = isOwner && new Date(submission.submissionDeadline) > Date.now();
+            section.append(h("div", {className: "row"},
+                h("div", {className: "row-head"},
+                    h("div", {},
+                        h("a", {href: "#/events/" + submission.eventId}, submission.eventTitle),
+                        h("span", {className: "badge"}, intentText(submission))),
+                    canWithdraw ? h("button", {
+                        className: "secondary small",
+                        onClick: async () => {
+                            try {
+                                await Api.del("/api/submissions/" + submission.id);
+                                toast("Entry withdrawn");
+                                projectPage(project.id);
+                            } catch (error) {
+                                toast(error.message);
+                            }
+                        }
+                    }, "Withdraw") : null),
+                h("div", {className: "meta"}, formatDateTime(submission.eventStartsAt))));
+        }
+
+        if (isOwner) {
+            const entered = new Set(submissions.map((submission) => submission.eventId));
+            const open = (await Api.get("/api/events"))
+                .filter((event) => event.acceptingSubmissions && !entered.has(event.id));
+            if (open.length > 0) {
+                const status = h("div");
+                const form = h("form", {
+                        className: "stack sub-form",
+                        onSubmit: async (event) => {
+                            event.preventDefault();
+                            try {
+                                await Api.post("/api/projects/" + project.id + "/submissions", readIntent(form));
+                                toast("Project entered");
+                                projectPage(project.id);
+                            } catch (error) {
+                                status.replaceChildren(errorText(error));
+                            }
+                        }
+                    },
+                    h("h3", {}, "Enter this project in an upcoming event"),
+                    eventSelect(open, false),
+                    intentChecks(),
+                    h("button", {type: "submit"}, "Enter project"),
+                    status);
+                section.append(form);
+            }
+        }
+    } catch (error) {
+        section.append(errorText(error));
+    }
+    return section;
+}
+
+async function tipsSection(project, user, isOwner) {
+    const section = h("section", {className: "card"},
+        h("h2", {}, "Tips"),
+        h("p", {className: "meta card-intro"}, "Suggestions, pointers, or things to watch out for on this idea."));
+
+    try {
+        const tips = await Api.get("/api/projects/" + project.id + "/tips");
+        if (tips.length === 0) {
+            section.append(h("p", {className: "empty"}, "No tips yet."));
+        }
+        for (const tip of tips) {
+            const canDelete = user && (user.id === tip.authorId || isOwner);
+            section.append(h("div", {className: "row"},
+                h("p", {className: "tip-content"}, tip.content),
+                h("div", {className: "row-head"},
+                    h("span", {className: "meta"},
+                        tip.authorName + " (" + tip.authorRole.toLowerCase() + ") · " + formatDate(tip.createdAt)),
+                    canDelete ? h("button", {
+                        className: "secondary small",
+                        onClick: async () => {
+                            try {
+                                await Api.del("/api/tips/" + tip.id);
+                                projectPage(project.id);
+                            } catch (error) {
+                                toast(error.message);
+                            }
+                        }
+                    }, "Delete") : null)));
+        }
+    } catch (error) {
+        section.append(errorText(error));
+    }
+
+    if (user) {
+        const status = h("div");
+        const form = h("form", {
+                className: "stack sub-form",
+                onSubmit: async (event) => {
+                    event.preventDefault();
+                    try {
+                        await Api.post("/api/projects/" + project.id + "/tips", formData(form));
+                        toast("Tip shared");
+                        projectPage(project.id);
+                    } catch (error) {
+                        status.replaceChildren(errorText(error));
+                    }
+                }
+            },
+            h("textarea", {name: "content", required: true, maxlength: 1000, placeholder: "Share a tip",
+                "aria-label": "Tip"}),
+            h("button", {type: "submit"}, "Share tip"),
+            status);
+        section.append(form);
+    } else {
+        section.append(h("p", {className: "meta"}, h("a", {href: "#/login"}, "Log in"), " to share a tip."));
+    }
+    return section;
 }
 
 function joinSection(projectId) {
@@ -227,22 +545,23 @@ function joinSection(projectId) {
         h("button", {type: "submit"}, "Request to join"),
         status);
 
-    return h("div", {className: "card"}, h("h3", {}, "Join this project"), form);
+    return h("section", {className: "card"}, h("h2", {}, "Join this project"), form);
 }
 
 async function ownerRequestsSection(projectId) {
-    const section = h("div", {className: "card"}, h("h3", {}, "Join requests"));
+    const list = h("div", {className: "request-list"});
+    const section = h("section", {className: "card"}, h("h2", {}, "Join requests"), list);
 
     try {
         const requests = await Api.get("/api/projects/" + projectId + "/join-requests");
         if (requests.length === 0) {
-            section.append(h("p", {className: "empty"}, "No requests yet."));
+            list.append(h("p", {className: "empty"}, "No requests yet."));
         }
         for (const request of requests) {
-            const row = h("div", {className: "card"},
-                h("strong", {}, request.userName), " ", badge(request.status),
+            const row = h("div", {className: "request-row"},
+                h("div", {className: "request-head"}, h("strong", {}, request.userName), badge(request.status)),
                 h("div", {className: "meta"}, [request.userEmail, request.userSkills].filter(Boolean).join(" · ")),
-                request.message ? h("p", {}, request.message) : null);
+                request.message ? h("p", {className: "request-message"}, request.message) : null);
 
             if (request.status === "PENDING") {
                 row.append(h("div", {className: "actions"},
@@ -250,10 +569,10 @@ async function ownerRequestsSection(projectId) {
                     h("button", {className: "secondary", onClick: () => decide(request.id, "REJECTED", projectId)},
                         "Reject")));
             }
-            section.append(row);
+            list.append(row);
         }
     } catch (error) {
-        section.append(errorText(error));
+        list.append(errorText(error));
     }
     return section;
 }
@@ -287,13 +606,16 @@ async function projectFormPage(id) {
     }
 
     let project = {};
-    if (id) {
-        try {
+    let openEvents = [];
+    try {
+        if (id) {
             project = await Api.get("/api/projects/" + id);
-        } catch (error) {
-            render(errorText(error));
-            return;
+        } else {
+            openEvents = (await Api.get("/api/events")).filter((event) => event.acceptingSubmissions);
         }
+    } catch (error) {
+        render(errorText(error));
+        return;
     }
 
     const status = h("div");
@@ -301,10 +623,24 @@ async function projectFormPage(id) {
             className: "stack",
             onSubmit: async (event) => {
                 event.preventDefault();
+                const data = formData(form);
+                delete data.eventId;
+                delete data.present;
+                delete data.publish;
                 try {
                     const saved = id
-                        ? await Api.put("/api/projects/" + id, formData(form))
-                        : await Api.post("/api/projects", formData(form));
+                        ? await Api.put("/api/projects/" + id, data)
+                        : await Api.post("/api/projects", data);
+                    const intent = id ? null : readIntent(form);
+                    if (intent && intent.eventId) {
+                        try {
+                            await Api.post("/api/projects/" + saved.id + "/submissions", intent);
+                        } catch (error) {
+                            toast("Project created, but it wasn't entered in the event: " + error.message);
+                            location.hash = "#/projects/" + saved.id;
+                            return;
+                        }
+                    }
                     toast(id ? "Project updated" : "Project created");
                     location.hash = "#/projects/" + saved.id;
                 } catch (error) {
@@ -316,16 +652,219 @@ async function projectFormPage(id) {
         h("label", {}, "Description",
             h("textarea", {name: "description", required: true, maxlength: 2000, value: project.description})),
         h("label", {}, "Category", h("input", {name: "category", maxlength: 255, value: project.category})),
-        h("label", {}, "Required skills (comma separated)",
+        h("label", {}, h("span", {}, "Required skills ", h("span", {className: "hint"}, "(comma separated)")),
             h("input", {name: "requiredSkills", maxlength: 255, value: project.requiredSkills})),
         h("label", {}, "Status",
             h("select", {name: "status"},
                 h("option", {value: "OPEN", selected: project.status !== "CLOSED"}, "Open"),
                 h("option", {value: "CLOSED", selected: project.status === "CLOSED"}, "Closed"))),
+        openEvents.length > 0
+            ? h("fieldset", {}, h("legend", {}, "Enter it in an upcoming event (optional)"),
+                eventSelect(openEvents, true), intentChecks())
+            : null,
         h("button", {type: "submit"}, id ? "Save changes" : "Create project"),
         status);
 
-    render(h("h1", {}, id ? "Edit project" : "New project"), form);
+    render(
+        id ? h("a", {href: "#/projects/" + id, className: "back-link"}, "← Back to project") : null,
+        pageHeader(id ? "Edit project" : "New project"),
+        h("section", {className: "card form-card"}, form));
+}
+
+async function eventsPage() {
+    const user = Api.getUser();
+    const list = h("div", {className: "project-list"}, h("p", {className: "empty"}, "Loading..."));
+
+    render(
+        pageHeader("Upcoming events",
+            "Showcases, hackathons and publications coming up. Enter a project to present or publish it.",
+            user && user.role === "FACULTY"
+                ? h("button", {onClick: () => location.hash = "#/events/new"}, "New event")
+                : null),
+        list);
+
+    try {
+        const events = await Api.get("/api/events");
+        list.replaceChildren(...(events.length
+            ? events.map(eventCard)
+            : [h("p", {className: "empty"}, "No upcoming events.")]));
+    } catch (error) {
+        list.replaceChildren(errorText(error));
+    }
+}
+
+function eventCard(event, index) {
+    return h("article", {className: "event-card"},
+        dateBlock(event.startsAt, index === 0),
+        h("div", {className: "project-body"},
+            h("div", {className: "project-card-head"},
+                h("h3", {className: "project-title"}, h("a", {href: "#/events/" + event.id}, event.title)),
+                countdown(event.submissionDeadline)),
+            h("p", {className: "project-meta"},
+                [formatDateTime(event.startsAt), event.location, event.createdByName].filter(Boolean).join(" · ")),
+            h("p", {className: "event-meta"}, "Entries due " + formatDateTime(event.submissionDeadline) + " · "
+                + event.submissionCount + (event.submissionCount === 1 ? " project entered" : " projects entered"))));
+}
+
+async function eventPage(id) {
+    render(h("p", {className: "empty"}, "Loading..."));
+
+    let event;
+    let submissions;
+    try {
+        [event, submissions] = await Promise.all([
+            Api.get("/api/events/" + id), Api.get("/api/events/" + id + "/submissions")]);
+    } catch (error) {
+        render(errorText(error));
+        return;
+    }
+
+    const user = Api.getUser();
+    const isCreator = user && user.id === event.createdById;
+
+    const details = h("section", {className: "card"},
+        h("div", {className: "detail-head event-head"},
+            dateBlock(event.startsAt, true), h("h1", {}, event.title), countdown(event.submissionDeadline)),
+        h("p", {className: "project-meta"},
+            [formatDateTime(event.startsAt), event.location, "Organized by " + event.createdByName]
+                .filter(Boolean).join(" · ")),
+        event.description ? h("p", {className: "detail-description"}, event.description) : null,
+        h("p", {className: "event-meta"}, "Entries due ",
+            formatDateTime(event.submissionDeadline)));
+
+    if (isCreator) {
+        details.append(h("div", {className: "actions"},
+            h("button", {onClick: () => location.hash = "#/events/" + id + "/edit"}, "Edit"),
+            h("button", {className: "danger", onClick: () => deleteEvent(id)}, "Delete")));
+    }
+
+    const entryList = (title, items) => h("section", {className: "card"},
+        h("h2", {}, title + " (" + items.length + ")"),
+        items.length
+            ? items.map((submission) => h("div", {className: "row"},
+                h("a", {href: "#/projects/" + submission.projectId}, submission.projectTitle),
+                h("div", {className: "meta"}, submission.ownerName)))
+            : h("p", {className: "empty"}, "Nothing yet."));
+
+    const sections = [h("a", {href: "#/events", className: "back-link"}, "← All events"), details,
+        entryList("Presenting", submissions.filter((submission) => submission.present)),
+        entryList("Publishing", submissions.filter((submission) => submission.publish))];
+
+    if (user && event.acceptingSubmissions) {
+        sections.push(await enterOwnProjectSection(event, submissions, user));
+    } else if (!user && event.acceptingSubmissions) {
+        sections.push(h("p", {className: "meta"}, h("a", {href: "#/login"}, "Log in"), " to enter one of your projects."));
+    }
+    render(...sections);
+}
+
+async function enterOwnProjectSection(event, submissions, user) {
+    const section = h("section", {className: "card"}, h("h2", {}, "Enter one of your projects"));
+    try {
+        const entered = new Set(submissions.map((submission) => submission.projectId));
+        const mine = (await Api.get("/api/projects"))
+            .filter((project) => project.ownerId === user.id && !entered.has(project.id));
+        if (mine.length === 0) {
+            section.append(h("p", {className: "empty"}, "You have no projects left to enter. ",
+                h("a", {href: "#/new"}, "Post a project"), " first."));
+            return section;
+        }
+
+        const status = h("div");
+        const form = h("form", {
+                className: "stack",
+                onSubmit: async (submitEvent) => {
+                    submitEvent.preventDefault();
+                    const intent = readIntent(form);
+                    intent.eventId = event.id;
+                    try {
+                        await Api.post("/api/projects/" + new FormData(form).get("projectId") + "/submissions", intent);
+                        toast("Project entered");
+                        eventPage(event.id);
+                    } catch (error) {
+                        status.replaceChildren(errorText(error));
+                    }
+                }
+            },
+            h("label", {}, "Project",
+                h("select", {name: "projectId", required: true},
+                    mine.map((project) => h("option", {value: project.id}, project.title)))),
+            intentChecks(),
+            h("button", {type: "submit"}, "Enter project"),
+            status);
+        section.append(form);
+    } catch (error) {
+        section.append(errorText(error));
+    }
+    return section;
+}
+
+async function deleteEvent(id) {
+    if (!confirm("Delete this event? Projects entered in it will be removed from it.")) {
+        return;
+    }
+    try {
+        await Api.del("/api/events/" + id);
+        toast("Event deleted");
+        location.hash = "#/events";
+    } catch (error) {
+        toast(error.message);
+    }
+}
+
+async function eventFormPage(id) {
+    if (!requireLogin()) {
+        return;
+    }
+
+    let event = {};
+    if (id) {
+        try {
+            event = await Api.get("/api/events/" + id);
+        } catch (error) {
+            render(errorText(error));
+            return;
+        }
+    }
+
+    const status = h("div");
+    const form = h("form", {
+            className: "stack",
+            onSubmit: async (submitEvent) => {
+                submitEvent.preventDefault();
+                const data = formData(form);
+                for (const key of ["startsAt", "submissionDeadline"]) {
+                    data[key] = data[key] ? new Date(data[key]).toISOString() : null;
+                }
+                try {
+                    const saved = id
+                        ? await Api.put("/api/events/" + id, data)
+                        : await Api.post("/api/events", data);
+                    toast(id ? "Event updated" : "Event created");
+                    location.hash = "#/events/" + saved.id;
+                } catch (error) {
+                    status.replaceChildren(errorText(error));
+                }
+            }
+        },
+        h("label", {}, "Title", h("input", {name: "title", required: true, maxlength: 255, value: event.title})),
+        h("label", {}, "Description",
+            h("textarea", {name: "description", maxlength: 2000, value: event.description})),
+        h("label", {}, "Location", h("input", {name: "location", maxlength: 255, value: event.location})),
+        h("label", {}, "Starts at",
+            h("input", {name: "startsAt", type: "datetime-local", required: true, value: toLocalInput(event.startsAt)})),
+        h("label", {}, "Submission deadline",
+            h("input", {
+                name: "submissionDeadline", type: "datetime-local", required: true,
+                value: toLocalInput(event.submissionDeadline)
+            })),
+        h("button", {type: "submit"}, id ? "Save changes" : "Create event"),
+        status);
+
+    render(
+        h("a", {href: id ? "#/events/" + id : "#/events", className: "back-link"}, id ? "← Back to event" : "← All events"),
+        pageHeader(id ? "Edit event" : "New event"),
+        h("section", {className: "card form-card"}, form));
 }
 
 async function loginPage() {
@@ -336,7 +875,7 @@ async function loginPage() {
                 event.preventDefault();
                 try {
                     Api.saveLogin(await Api.post("/api/auth/login", formData(form)));
-                    toast("Welcome back");
+                    toast("Logged in");
                     location.hash = "#/";
                 } catch (error) {
                     status.replaceChildren(errorText(error));
@@ -348,9 +887,13 @@ async function loginPage() {
         h("button", {type: "submit"}, "Log in"),
         status);
 
-    render(h("h1", {}, "Log in"), form,
-        h("p", {}, "No account? ", h("a", {href: "#/register"}, "Register")),
-        await demoBox());
+    render(h("div", {className: "auth-wrap"},
+        h("section", {className: "card"},
+            h("h1", {}, "Log in"),
+            h("p", {className: "page-intro"}, "Use your AUM Project Hub account."),
+            form,
+            h("p", {className: "auth-switch"}, "No account? ", h("a", {href: "#/register"}, "Register"))),
+        await demoBox()));
 }
 
 function registerPage() {
@@ -372,7 +915,7 @@ function registerPage() {
         },
         h("label", {}, "Name", h("input", {name: "name", required: true, maxlength: 255})),
         h("label", {}, "Email", h("input", {name: "email", type: "email", required: true, maxlength: 255})),
-        h("label", {}, "Password (8-72 characters)",
+        h("label", {}, h("span", {}, "Password ", h("span", {className: "hint"}, "(8–72 characters)")),
             h("input", {name: "password", type: "password", required: true, minlength: 8, maxlength: 72})),
         h("label", {}, "Role",
             h("select", {name: "role"},
@@ -382,7 +925,12 @@ function registerPage() {
         h("button", {type: "submit"}, "Create account"),
         status);
 
-    render(h("h1", {}, "Register"), form);
+    render(h("div", {className: "auth-wrap"},
+        h("section", {className: "card"},
+            h("h1", {}, "Create an account"),
+            h("p", {className: "page-intro"}, "Students can request to join projects. Faculty can post them."),
+            form,
+            h("p", {className: "auth-switch"}, "Already registered? ", h("a", {href: "#/login"}, "Log in")))));
 }
 
 async function accountPage() {
@@ -415,20 +963,24 @@ async function accountPage() {
         },
         h("label", {}, "Name", h("input", {name: "name", required: true, maxlength: 255, value: me.name})),
         h("label", {}, "Department", h("input", {name: "department", maxlength: 255, value: me.department})),
-        h("label", {}, "Skills (comma separated)", h("input", {name: "skills", maxlength: 255, value: me.skills})),
+        h("label", {}, h("span", {}, "Skills ", h("span", {className: "hint"}, "(comma separated)")),
+            h("input", {name: "skills", maxlength: 255, value: me.skills})),
         h("label", {}, "Bio", h("textarea", {name: "bio", maxlength: 1000, value: me.bio})),
         h("button", {type: "submit"}, "Save profile"),
         status);
 
-    const myProjects = h("div", {}, h("p", {className: "empty"}, "Loading..."));
-    const myRequests = h("div", {}, h("p", {className: "empty"}, "Loading..."));
+    const myProjects = h("div", {className: "project-list"}, h("p", {className: "empty"}, "Loading..."));
+    const myRequests = h("div", {className: "request-list"}, h("p", {className: "empty"}, "Loading..."));
 
     render(
-        h("h1", {}, me.name),
-        h("p", {className: "meta"}, me.email + " · " + me.role),
-        h("div", {className: "card"}, h("h3", {}, "Profile"), profileForm),
-        h("div", {className: "card"}, h("h3", {}, "My projects"), myProjects),
-        h("div", {className: "card"}, h("h3", {}, "My join requests"), myRequests));
+        h("div", {className: "page-header"},
+            h("h1", {}, me.name),
+            h("p", {className: "page-intro"}, me.email + " · ", badge(me.role))),
+        h("div", {className: "account-grid"},
+            h("section", {className: "card"}, h("h2", {}, "Profile"), profileForm),
+            h("div", {className: "account-main"},
+                h("section", {className: "card"}, h("h2", {}, "My projects"), myProjects),
+                h("section", {className: "card"}, h("h2", {}, "My join requests"), myRequests))));
 
     try {
         const all = await Api.get("/api/projects");
@@ -451,8 +1003,9 @@ async function accountPage() {
 }
 
 function myRequestRow(request) {
-    const row = h("div", {className: "card"},
-        h("a", {href: "#/projects/" + request.projectId}, request.projectTitle), " ", badge(request.status),
+    const row = h("div", {className: "request-row"},
+        h("div", {className: "request-head"},
+            h("a", {href: "#/projects/" + request.projectId}, request.projectTitle), badge(request.status)),
         h("div", {className: "meta"}, "Sent " + formatDate(request.createdAt)));
 
     if (request.status === "PENDING") {
@@ -488,12 +1041,20 @@ function route() {
         projectFormPage(null);
     } else if (path === "/me") {
         accountPage();
+    } else if (path === "/events") {
+        eventsPage();
+    } else if (path === "/events/new") {
+        eventFormPage(null);
+    } else if ((match = path.match(/^\/events\/(\d+)\/edit$/))) {
+        eventFormPage(match[1]);
+    } else if ((match = path.match(/^\/events\/(\d+)$/))) {
+        eventPage(match[1]);
     } else if ((match = path.match(/^\/projects\/(\d+)\/edit$/))) {
         projectFormPage(match[1]);
     } else if ((match = path.match(/^\/projects\/(\d+)$/))) {
         projectPage(match[1]);
     } else {
-        render(h("h1", {}, "Page not found"), h("a", {href: "#/"}, "Back to projects"));
+        render(pageHeader("Page not found"), h("a", {href: "#/"}, "Back to projects"));
     }
 }
 

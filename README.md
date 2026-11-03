@@ -16,15 +16,19 @@ The home page has one-click logins for a demo faculty account and a demo student
 - Send a join request to someone else's project, and withdraw it while it's still pending
 - As the owner, see the requests for your project and accept or reject them
 - Edit your own profile (department, skills, short bio)
+- See upcoming events (showcases, hackathons, journal issues) with their submission deadlines; faculty create them
+- Enter your project in an upcoming event, either to present it, publish it, or both, when you post it or later
+- Upvote other people's projects; anything with 3 or more upvotes is marked hot, and you can sort by hot
+- Leave tips on a project idea; the author or the project owner can remove them
 
-A few rules are enforced on the backend, not just in the UI: you can't request to join your own project, closed projects don't take requests, you can only send one request per project, and once a request is accepted or rejected it can't be changed again.
+A few rules are enforced on the backend, not just in the UI: you can't request to join your own project, closed projects don't take requests, you can only send one request per project, and once a request is accepted or rejected it can't be changed again. Only faculty can create events, a submission deadline has to come before the event starts, entries close at the deadline, a project can be entered in an event once, and you can't upvote your own project.
 
 ## Tech stack
 
 - **Backend:** Java 17, Spring Boot 3.5, Spring Security with JWT, Spring Data JPA
 - **Database:** PostgreSQL (H2 in tests)
 - **Frontend:** plain HTML, CSS and JavaScript served by Spring Boot
-- **Testing:** JUnit 5, Mockito, MockMvc (68 tests)
+- **Testing:** JUnit 5, Mockito, MockMvc (86 tests)
 - **DevOps:** Docker, Docker Compose, GitHub Actions
 - **AWS:** ECS Fargate, Application Load Balancer, RDS PostgreSQL, Secrets Manager, CloudWatch, CloudFormation
 
@@ -36,7 +40,7 @@ src/main/java/com/aum/projecthub/
 ├── controller/   REST endpoints
 ├── service/      business rules (ownership checks, join request rules)
 ├── repository/   Spring Data JPA repositories
-├── model/        JPA entities: User, Project, JoinRequest
+├── model/        JPA entities: User, Project, JoinRequest, Event, EventSubmission, Upvote, Tip
 ├── dto/          request/response objects, so entities and password hashes never leave the API
 ├── exception/    a few exceptions mapped to 400/403/404/409 in one handler
 └── demo/         seeds demo accounts and projects when app.demo-data=true
@@ -47,6 +51,8 @@ infra/aws/                   CloudFormation templates
 It's a standard layered Spring Boot app. Controllers stay thin, services hold the rules, and repositories talk to the database. The package name follows the usual Java convention of a reversed domain plus the project name.
 
 There are three tables: `users`, `projects` (each has an owner) and `join_requests` (links a user to a project, with a status). `join_requests` has a unique constraint on `(project_id, user_id)`. The service checks for duplicates first, but two requests that arrive at the same moment can both pass that check, so the constraint is the real guarantee. When it fires, the API returns 409 instead of a 500.
+
+Events, upvotes and tips add four more: `events`, `event_submissions` (a project entered in an event, with `present` and `publish` flags, unique on `(event_id, project_id)`), `upvotes` (unique on `(project_id, user_id)`) and `tips`. Event times are stored as UTC instants so the deadline check doesn't depend on the server's time zone; the browser converts them to local time. Upvote counts for the project list come from one grouped query rather than one count per project.
 
 ### Login
 
@@ -61,11 +67,25 @@ Passwords are hashed with BCrypt. Logging in returns a JWT that's valid for 24 h
 | GET | `/api/users/me` | logged in | your profile |
 | GET | `/api/users/{id}` | logged in | someone's profile |
 | PUT | `/api/users/{id}` | that user | update your profile |
-| GET | `/api/projects` | anyone | list projects, optional `category`, `status`, `skill` filters |
+| GET | `/api/projects` | anyone | list projects, optional `category`, `status`, `skill` filters and `sort=hot` |
 | GET | `/api/projects/{id}` | anyone | project details |
 | POST | `/api/projects` | logged in | create a project |
 | PUT | `/api/projects/{id}` | owner | update a project |
-| DELETE | `/api/projects/{id}` | owner | delete a project and its requests |
+| DELETE | `/api/projects/{id}` | owner | delete a project with its requests, upvotes, tips and event entries |
+| PUT | `/api/projects/{id}/upvote` | logged in, not owner | upvote (doing it twice is a no-op) |
+| DELETE | `/api/projects/{id}/upvote` | logged in | remove your upvote |
+| GET | `/api/projects/{id}/tips` | anyone | tips on a project |
+| POST | `/api/projects/{id}/tips` | logged in | leave a tip |
+| DELETE | `/api/tips/{id}` | author or project owner | remove a tip |
+| GET | `/api/events` | anyone | upcoming events, soonest first |
+| GET | `/api/events/{id}` | anyone | event details |
+| POST | `/api/events` | faculty | create an event |
+| PUT | `/api/events/{id}` | creator | update an event |
+| DELETE | `/api/events/{id}` | creator | delete an event and its entries |
+| GET | `/api/events/{id}/submissions` | anyone | projects entered in an event |
+| GET | `/api/projects/{id}/submissions` | anyone | events a project is entered in |
+| POST | `/api/projects/{id}/submissions` | owner | enter a project in an event (`eventId`, `present`, `publish`) |
+| DELETE | `/api/submissions/{id}` | owner | withdraw an entry before the deadline |
 | POST | `/api/projects/{id}/join-requests` | logged in | ask to join |
 | GET | `/api/projects/{id}/join-requests` | owner | requests for your project |
 | GET | `/api/join-requests/mine` | logged in | requests you've sent |

@@ -29,7 +29,10 @@ public class SecurityConfig {
                         .requestMatchers("/actuator/health", "/actuator/health/**", "/actuator/info").permitAll()
                         .requestMatchers(HttpMethod.GET, "/", "/index.html", "/css/**", "/js/**", "/favicon.ico")
                         .permitAll()
-                        .requestMatchers(HttpMethod.GET, "/api/projects", "/api/projects/*").permitAll()
+                        .requestMatchers(HttpMethod.GET, "/api/projects", "/api/projects/*",
+                                "/api/projects/*/tips", "/api/projects/*/submissions").permitAll()
+                        .requestMatchers(HttpMethod.GET, "/api/events", "/api/events/*",
+                                "/api/events/*/submissions").permitAll()
                         .anyRequest().authenticated())
                 .exceptionHandling(ex -> ex.authenticationEntryPoint(new HttpStatusEntryPoint(HttpStatus.UNAUTHORIZED)))
                 .addFilterBefore(jwtAuthFilter, UsernamePasswordAuthenticationFilter.class);
