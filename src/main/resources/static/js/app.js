@@ -226,7 +226,7 @@ async function browsePage() {
 
     render(
         pageHeader("Projects at AUM",
-            "Research and side projects posted by AUM faculty and students. Ask to join, upvote the ones you like, or leave a tip."),
+            "Discover research and collaborative projects posted by AUM faculty and students. Ask to join, upvote the ones you like, or leave a tip."),
         await demoBox(),
         h("div", {className: "browse-layout"},
             h("div", {},
