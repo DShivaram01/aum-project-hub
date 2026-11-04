@@ -350,7 +350,7 @@ main {
 
 .filter-bar {
     display: grid;
-    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) 128px 148px auto;
+    grid-template-columns: minmax(0, 0.8fr) minmax(0, 1.2fr) 128px 148px auto;
     gap: 8px;
 }
 
