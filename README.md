@@ -2,11 +2,17 @@
 
 [![CI](https://github.com/DShivaram01/aum-project-hub/actions/workflows/ci.yml/badge.svg)](https://github.com/DShivaram01/aum-project-hub/actions/workflows/ci.yml)
 
+A Spring Boot web app where AUM faculty and students post projects and others ask to join them.
+
 At AUM there isn't a simple place where faculty can post a research or side project and students can ask to join. It usually happens over email or by word of mouth. I built this to fix that: faculty and students post projects, other people browse and filter them by skill, send a join request with a short message, and the project owner accepts or rejects it.
 
-**Live demo:** http://aum-pr-LoadB-JuZAyVVHlFOR-1194787445.us-east-1.elb.amazonaws.com
+**[Live demo](http://aum-pr-LoadB-JuZAyVVHlFOR-1194787445.us-east-1.elb.amazonaws.com)**
 
 The home page has one-click logins for a demo faculty account and a demo student account (password `demo1234`), so you can try both sides without registering. The demo is plain HTTP, so please don't reuse a real password if you register.
+
+| Browse and filter projects | Owner view with join requests |
+|---|---|
+| ![Browse page with project list and upcoming deadlines](docs/screenshots/browse.png) | ![Project page showing join requests the owner can accept or reject](docs/screenshots/project-detail.png) |
 
 ## What it does
 
@@ -23,12 +29,19 @@ The home page has one-click logins for a demo faculty account and a demo student
 
 A few rules are enforced on the backend, not just in the UI: you can't request to join your own project, closed projects don't take requests, you can only send one request per project, and once a request is accepted or rejected it can't be changed again. Only faculty can create events, a submission deadline has to come before the event starts, entries close at the deadline, a project can be entered in an event once, and you can't upvote your own project.
 
+## A few things worth pointing out
+
+- **Duplicate join requests can't slip through.** The service checks for an existing request, but two requests landing at the same moment can both pass that check. A unique constraint on `(project_id, user_id)` is the real guarantee, and when it fires the API returns 409 instead of a 500.
+- **No N+1 on the project list.** Upvote counts for every project come from one grouped query, not one count per project.
+- **Deadlines don't depend on the server's time zone.** Event times are stored as UTC instants and the browser converts them to local time.
+- **Deploys can't leave the site broken.** CI pushes to ECS with OIDC (no AWS keys in the repo), and if the new version fails its health checks, ECS rolls back on its own.
+
 ## Tech stack
 
 - **Backend:** Java 17, Spring Boot 3.5, Spring Security with JWT, Spring Data JPA
 - **Database:** PostgreSQL (H2 in tests)
 - **Frontend:** plain HTML, CSS and JavaScript served by Spring Boot
-- **Testing:** JUnit 5, Mockito, MockMvc (86 tests)
+- **Testing:** JUnit 5, Mockito, MockMvc (87 tests)
 - **DevOps:** Docker, Docker Compose, GitHub Actions
 - **AWS:** ECS Fargate, Application Load Balancer, RDS PostgreSQL, Secrets Manager, CloudWatch, CloudFormation
 
@@ -48,17 +61,18 @@ src/main/resources/static/   the frontend
 infra/aws/                   CloudFormation templates
 ```
 
-It's a standard layered Spring Boot app. Controllers stay thin, services hold the rules, and repositories talk to the database. The package name follows the usual Java convention of a reversed domain plus the project name.
+It's a standard layered Spring Boot app. Controllers stay thin, services hold the rules, and repositories talk to the database.
 
-There are three tables: `users`, `projects` (each has an owner) and `join_requests` (links a user to a project, with a status). `join_requests` has a unique constraint on `(project_id, user_id)`. The service checks for duplicates first, but two requests that arrive at the same moment can both pass that check, so the constraint is the real guarantee. When it fires, the API returns 409 instead of a 500.
-
-Events, upvotes and tips add four more: `events`, `event_submissions` (a project entered in an event, with `present` and `publish` flags, unique on `(event_id, project_id)`), `upvotes` (unique on `(project_id, user_id)`) and `tips`. Event times are stored as UTC instants so the deadline check doesn't depend on the server's time zone; the browser converts them to local time. Upvote counts for the project list come from one grouped query rather than one count per project.
+There are seven tables. `users` and `projects` are the core, and each project has an owner. `join_requests` links a user to a project with a status and is unique on `(project_id, user_id)`. `events` holds showcases, hackathons and journal issues, and `event_submissions` is a project entered in an event, with `present` and `publish` flags and a unique `(event_id, project_id)`. `upvotes` is unique on `(project_id, user_id)`, and `tips` are short comments on a project.
 
 ### Login
 
 Passwords are hashed with BCrypt. Logging in returns a JWT that's valid for 24 hours, and the frontend sends it as `Authorization: Bearer <token>`. A filter checks the token on every request, so there are no server-side sessions. Passwords are capped at 72 characters because BCrypt ignores anything after the first 72 bytes.
 
 ## API
+
+<details>
+<summary>All 30 endpoints</summary>
 
 | Method | Endpoint | Who | What it does |
 |--------|----------|-----|--------------|
@@ -92,6 +106,8 @@ Passwords are hashed with BCrypt. Logging in returns a JWT that's valid for 24 h
 | PUT | `/api/join-requests/{id}` | owner | accept or reject |
 | DELETE | `/api/join-requests/{id}` | requester | withdraw a pending request |
 | GET | `/actuator/health` | anyone | health check, includes the database |
+
+</details>
 
 Errors come back as `{"error": "..."}`, or as a field-to-message map for validation errors. Status codes: 400 bad input, 401 not logged in, 403 not allowed, 404 not found, 409 conflict.
 
@@ -134,6 +150,16 @@ GitHub Actions runs on every push:
 4. On `main`, pushes the image to Amazon ECR and rolls it out to ECS. If the new version fails its health checks, ECS rolls back automatically.
 
 GitHub authenticates to AWS with OIDC, so there are no AWS keys stored in the repo.
+
+```mermaid
+flowchart LR
+    GH[GitHub Actions] -- OIDC --> ECR[Amazon ECR]
+    ECR --> ECS[ECS Fargate]
+    User((Browser)) --> ALB[Application Load Balancer] --> ECS
+    ECS --> RDS[(RDS PostgreSQL)]
+    SM[Secrets Manager] -. DB password, JWT secret .-> ECS
+    ECS -- JSON logs --> CW[CloudWatch dashboard and alarms] --> SNS[Email alerts]
+```
 
 On AWS the app runs as a container on ECS Fargate behind an Application Load Balancer. The data lives in an RDS PostgreSQL instance that only the app can reach, with encrypted storage and 7 days of automatic backups. The database password and the JWT secret are kept in Secrets Manager and injected when the container starts. Everything is defined in `infra/aws/`:
 
