@@ -113,20 +113,28 @@ Errors come back as `{"error": "..."}`, or as a field-to-message map for validat
 
 ## Running it locally
 
-You need Docker. To run the app and PostgreSQL together:
+## Running it locally
+
+You need Docker (Docker Desktop on Windows or Mac). Clone the repo and start the app and PostgreSQL together:
 
 ```bash
+git clone https://github.com/DShivaram01/aum-project-hub.git
+cd aum-project-hub
 docker compose up --build
 ```
 
-Then open http://localhost:8080. Demo data is turned on in the compose file, so the demo accounts work locally too.
+The first build takes a few minutes while Maven downloads dependencies. Then open http://localhost:8080. Demo data is on in the compose file, so the demo logins work locally too. Stop it with Ctrl+C, and run `docker compose down -v` if you want to wipe the database and start fresh.
 
-To run the app from your IDE or with Maven instead (needs Java 17):
+To run the app from your IDE or with Maven instead (needs Java 17), start only the database and run the app on your machine:
 
 ```bash
 docker compose up -d postgres
-./mvnw spring-boot:run
+./mvnw spring-boot:run          # Windows: .\mvnw.cmd spring-boot:run
 ```
+
+In IntelliJ you can also just open the folder and run `ProjectHubApplication`. Every setting has a local default that matches the compose database, so there's nothing to configure. To override them, set `DB_URL`, `DB_USERNAME`, `DB_PASSWORD` or `JWT_SECRET` (at least 32 characters). Demo data is off in this mode, so set `APP_DEMODATA=true` if you want it.
+
+If port 5432 or 8080 is already in use (a local Postgres install is the usual culprit), stop that service or change the left-hand port in `docker-compose.yml`.
 
 Configuration comes from environment variables: `DB_URL`, `DB_USERNAME`, `DB_PASSWORD`, `JWT_SECRET` (at least 32 characters), and `APP_DEMODATA=true` if you want the demo data.
 
